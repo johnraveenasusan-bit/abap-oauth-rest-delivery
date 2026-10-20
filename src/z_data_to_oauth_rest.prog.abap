@@ -3,6 +3,7 @@
 *&---------------------------------------------------------------------*
 REPORT z_data_to_oauth_rest.
 
+" These limits apply to the transmitted payload and token lifetime behavior.
 CONSTANTS:
   gc_max_payload_bytes TYPE i VALUE 1048576,
   gc_token_skew_secs   TYPE i VALUE 30,
@@ -81,6 +82,7 @@ CLASS lcl_rest_handler DEFINITION.
         valid_until TYPE tzntstmpl,
       END OF ty_token_cache.
 
+    " Cache tokens only within this ABAP internal session, keyed by OAuth destination.
     CLASS-DATA gt_token_cache TYPE STANDARD TABLE OF ty_token_cache
                               WITH DEFAULT KEY.
 
@@ -199,6 +201,7 @@ ENDCLASS.
 
 CLASS lcl_rest_handler IMPLEMENTATION.
   METHOD message_text.
+    " User-facing diagnostics are maintained in the SE91 class Z_OAUTH_REST.
     MESSAGE ID 'Z_OAUTH_REST' TYPE 'S' NUMBER iv_msgno
       WITH iv_v1 iv_v2 iv_v3 iv_v4
       INTO rv_text.
@@ -326,6 +329,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
 
     CLEAR es_result.
 
+    " Serialize and enforce the byte limit before making any network request.
     CALL METHOD lcl_rest_handler=>serialize_to_json
       EXPORTING
         io_data  = io_data
@@ -339,6 +343,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     ENDIF.
 
     TRY.
+        " The API limit applies to UTF-8 bytes, not ABAP character count.
         lv_utf8_body = cl_abap_codepage=>convert_to(
                          source   = lv_json
                          codepage = 'UTF-8' ).
@@ -400,6 +405,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     ENDIF.
 
     IF es_result-status_code = 401.
+      " Drop a rejected token for the next send; do not replay this POST automatically.
       DELETE gt_token_cache WHERE destination = iv_token_destination.
     ENDIF.
 
@@ -488,8 +494,10 @@ CLASS lcl_rest_handler IMPLEMENTATION.
         ENDIF.
         lo_type_desc = cl_abap_typedescr=>describe_by_data( <fs_data> ).
 
+        " RTTS dispatches by the value's runtime kind, so the caller need not know its type.
         CASE lo_type_desc->kind.
           WHEN cl_abap_typedescr=>kind_struct.
+            " A structure becomes an object and its component names are lowercased.
             lo_struct_desc ?= lo_type_desc.
             lt_components = lo_struct_desc->get_components( ).
             ev_json = '{'.
@@ -543,6 +551,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
             CONCATENATE ev_json '}' INTO ev_json.
 
           WHEN cl_abap_typedescr=>kind_table.
+            " Each internal table row becomes one JSON array element.
             ASSIGN <fs_data> TO <fs_table>.
             IF sy-subrc <> 0.
               CALL METHOD lcl_rest_handler=>message_text
@@ -578,6 +587,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
             CONCATENATE ev_json ']' INTO ev_json.
 
           WHEN cl_abap_typedescr=>kind_ref.
+            " Data references can be followed; object references have no generic JSON mapping.
             ASSIGN <fs_data> TO <fs_data_ref>.
             IF sy-subrc <> 0.
               CALL METHOD lcl_rest_handler=>message_text
@@ -613,6 +623,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
           WHEN cl_abap_typedescr=>kind_elem.
             CASE lo_type_desc->type_kind.
               WHEN 'C' OR 'N' OR 'g'.
+                " Keep N-type identifiers as strings; trim only C-field padding.
                 lv_text = <fs_data>.
                 IF lo_type_desc->type_kind = 'C'.
                   SHIFT lv_text RIGHT DELETING TRAILING space.
@@ -625,6 +636,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
                     ev_error = ev_error.
 
               WHEN 'D'.
+                " Emit ABAP dates in the JSON-friendly YYYY-MM-DD form.
                 lv_text = <fs_data>.
                 IF lv_text = '00000000'.
                   ev_json = 'null'.
@@ -642,6 +654,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
                 ENDIF.
 
               WHEN 'T'.
+                " Emit ABAP times in the JSON-friendly HH:MM:SS form.
                 lv_text = <fs_data>.
                 CONCATENATE lv_text+0(2) ':'
                             lv_text+2(2) ':'
@@ -655,6 +668,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
                     ev_error = ev_error.
 
               WHEN 'I' OR 'b' OR 's' OR '8' OR 'P' OR 'F' OR 'a' OR 'e'.
+                " WRITE follows the user's decimal notation; normalize comma decimals for JSON.
                 WRITE <fs_data> TO lv_number NO-GROUPING.
                 CONDENSE lv_number NO-GAPS.
                 IF sy-dcpfm = 'X' OR sy-dcpfm = 'Y'.
@@ -686,6 +700,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
                     ev_error = ev_error.
 
               WHEN OTHERS.
+                " Reject type kinds with no explicit JSON representation.
                 CALL METHOD lcl_rest_handler=>message_text
                   EXPORTING
                     iv_msgno = c_msg_json_type
@@ -743,6 +758,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
       ENDIF.
     ENDDO.
 
+    " Escape JSON metacharacters and permitted control characters before adding quotes.
     REPLACE ALL OCCURRENCES OF '\' IN lv_escaped WITH '\\'.
     REPLACE ALL OCCURRENCES OF '"' IN lv_escaped WITH '\"'.
     REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf
@@ -761,6 +777,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     DATA lv_digits TYPE i.
     DATA lv_char TYPE c LENGTH 1.
 
+    " Check JSON's number grammar rather than trusting locale-formatted WRITE output.
     rv_valid = space.
     lv_length = strlen( iv_value ).
     IF lv_length = 0.
@@ -867,6 +884,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     CLEAR: ev_token, ev_error.
     GET TIME STAMP FIELD lv_now.
 
+    " Reuse only a token that remains valid beyond the configured safety margin.
     READ TABLE gt_token_cache ASSIGNING <ls_cache>
       WITH KEY destination = iv_token_destination.
     IF sy-subrc = 0.
@@ -878,6 +896,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
       DELETE gt_token_cache WHERE destination = iv_token_destination.
     ENDIF.
 
+    " Basic credentials come from the SM59 token destination; the body carries the grant.
     lv_form = 'grant_type=client_credentials'.
     TRY.
         lv_form_bytes = cl_abap_codepage=>convert_to(
@@ -963,6 +982,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     DATA lv_padding_length TYPE i.
     DATA lv_padding TYPE string.
 
+    " Extract only the OAuth fields required here, then validate Bearer token syntax.
     CLEAR: ev_token, ev_token_type, ev_expires_in, ev_error.
 
     CALL METHOD lcl_rest_handler=>extract_json_string
@@ -1070,6 +1090,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     DATA lv_decode_escape TYPE abap_bool.
     DATA lv_closed TYPE abap_bool.
 
+    " This focused reader handles the required OAuth string fields, not arbitrary JSON.
     CLEAR: ev_value, ev_error.
     CONCATENATE '"' iv_key '"' INTO lv_search.
     FIND FIRST OCCURRENCE OF lv_search IN iv_json MATCH OFFSET lv_position.
@@ -1177,6 +1198,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
             lv_unicode_value = 9.
             lv_decode_escape = 'X'.
           WHEN 'u'.
+            " Decode a four-hex-digit escape; only token-compatible ASCII is accepted later.
             IF lv_position + 4 > lv_length.
               CALL METHOD lcl_rest_handler=>message_text
                 EXPORTING
@@ -1274,6 +1296,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     DATA lv_cr TYPE c LENGTH 1.
     DATA lo_exception TYPE REF TO cx_root.
 
+    " Bearer token fields use ASCII token syntax; non-ASCII code points are rejected.
     CLEAR: ev_char, ev_error.
 
     IF iv_codepoint >= 32 AND iv_codepoint <= 126.
@@ -1460,6 +1483,7 @@ CLASS lcl_rest_handler IMPLEMENTATION.
     DATA lv_mm TYPE c LENGTH 2.
     DATA lv_ss TYPE c LENGTH 2.
 
+    " UTC conversion keeps expiry arithmetic independent of the user's local timezone.
     CLEAR: ev_timestamp, ev_error.
     IF iv_seconds < 0.
       CALL METHOD lcl_rest_handler=>message_text
@@ -1524,6 +1548,7 @@ ENDCLASS.
 
 CLASS ltc_rest_handler IMPLEMENTATION.
   METHOD test_nested_json_shape.
+    " Verify recursive array/object shape, lowercase keys, and non-ASCII sample text.
     DATA ls_event TYPE ty_event.
     DATA lt_events TYPE ty_event_tab.
     DATA lr_data TYPE REF TO data.
@@ -1594,6 +1619,7 @@ CLASS ltc_rest_handler IMPLEMENTATION.
 ENDCLASS.
 
 START-OF-SELECTION.
+  " Demo entry point; replace this sample event table with the caller's data reference.
   DATA gs_event TYPE ty_event.
   DATA gt_events TYPE ty_event_tab.
   DATA lr_data TYPE REF TO data.
@@ -1622,6 +1648,7 @@ START-OF-SELECTION.
       es_result            = ls_result.
 
   IF ls_result-error_msg IS NOT INITIAL.
+    " Always display a transport/application error, even when no HTTP status was received.
     CALL METHOD lcl_rest_handler=>message_text
       EXPORTING
         iv_msgno = lcl_rest_handler=>c_msg_output_error
