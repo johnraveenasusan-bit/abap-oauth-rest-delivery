@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<abapGit version="v1.0.0" serializer="LCL_OBJECT_PROG" serializer_version="v1.0.0">
+ <I18N_TPOOL>
+  <LANGUAGE>E</LANGUAGE>
+  <TEXTPOOL>
+   <item>
+    <ID>I</ID>
+    <KEY>001</KEY>
+    <ENTRY>API Destination</ENTRY>
+    <LENGTH>15</LENGTH>
+   </item>
+   <item>
+    <ID>I</ID>
+    <KEY>002</KEY>
+    <ENTRY>Token Destination</ENTRY>
+    <LENGTH>17</LENGTH>
+   </item>
+   <item>
+    <ID>R</ID>
+    <ENTRY>JSON Delivery to OAuth-Protected REST Endpoint</ENTRY>
+    <LENGTH>46</LENGTH>
+   </item>
+   <item>
+    <ID>S</ID>
+    <KEY>P_API_DEST</KEY>
+    <ENTRY>API Destination (SM59)</ENTRY>
+    <LENGTH>30</LENGTH>
+   </item>
+   <item>
+    <ID>S</ID>
+    <KEY>P_TOKEN_DEST</KEY>
+    <ENTRY>Token Destination (SM59)</ENTRY>
+    <LENGTH>30</LENGTH>
+   </item>
+  </TEXTPOOL>
+ </I18N_TPOOL>
+</abapGit>
